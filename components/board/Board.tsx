@@ -1,1108 +1,802 @@
 "use client";
 
 import {
-  CSSProperties,
+  ChangeEvent,
   FormEvent,
+  Fragment,
   KeyboardEvent,
   PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
-import { Box, Button, Flex, Heading, Input, Text, VStack, chakra } from "@chakra-ui/react";
+import {
+  Box,
+  Button,
+  Flex,
+  Heading,
+  IconButton,
+  Input,
+  Text,
+  chakra,
+} from "@chakra-ui/react";
 import {
   DragDropContext,
   Draggable,
   DraggableProvidedDragHandleProps,
   DropResult,
   Droppable,
-  DroppableProvided,
-  DroppableStateSnapshot,
 } from "@hello-pangea/dnd";
-import {
-  MIN_COL_PX,
-  MIN_ROW_PX,
-  absorbSpanAfterRemoval,
-  insertCellWithClamp,
-  normalizeFracs,
-  sumSpans,
-} from "@/lib/boardUtils";
-import { useElementRect } from "@/hooks/useElementRect";
-import { BoardState, Card, Cell, Column, QuadrantDirection } from "@/types/board";
+import { AddIcon, DeleteIcon, DragHandleIcon } from "@chakra-ui/icons";
+import { BoardState, Cell, Column, Task } from "@/types/board";
+import { arrayMove, clamp } from "@/lib/boardUtils";
 
-const INITIAL_ROWS = [0.34, 0.33, 0.33];
+const BOARD_MIN_HEIGHT = 560;
+const COLUMN_MIN_HEIGHT = 420;
+const CELL_MIN_HEIGHT_PX = 96;
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const createId = () =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2, 10);
 
-type QuadrantIdentifier = {
-  columnIndex: number;
-  cellIndex: number;
-  direction: QuadrantDirection;
-};
+const cellsDroppableId = (columnId: string) => `cells-${columnId}`;
+const tasksDroppableId = (cellId: string) => `tasks-${cellId}`;
 
-const parseQuadrantId = (id: string): QuadrantIdentifier | null => {
-  const [prefix, columnPart, cellPart, directionPart] = id.split(":");
-  if (prefix !== "quad") {
-    return null;
-  }
-  const columnIndex = Number(columnPart);
-  const cellIndex = Number(cellPart);
-  if (Number.isNaN(columnIndex) || Number.isNaN(cellIndex)) {
-    return null;
-  }
-  if (directionPart !== "top" && directionPart !== "bottom" && directionPart !== "left" && directionPart !== "right") {
-    return null;
-  }
-  return {
-    columnIndex,
-    cellIndex,
-    direction: directionPart,
-  };
-};
-
-const parseColumnDroppableId = (id: string) => {
-  const [prefix, indexPart] = id.split("-");
-  if (prefix !== "col") {
-    return null;
-  }
-  const index = Number(indexPart);
-  return Number.isNaN(index) ? null : index;
-};
-
-const parseCardDroppableId = (id: string) => {
-  if (!id.startsWith("cards-")) {
-    return null;
-  }
-  return id.slice("cards-".length);
-};
+const parseCellsDroppableId = (id: string) => (id.startsWith("cells-") ? id.slice(6) : null);
+const parseTasksDroppableId = (id: string) => (id.startsWith("tasks-") ? id.slice(6) : null);
 
 const createInitialBoard = (): BoardState => {
-  const rows = INITIAL_ROWS;
-
   const columnA: Column = {
-    id: crypto.randomUUID(),
-    frac: 0.34,
+    id: createId(),
+    title: "아이디어",
     cells: [
-      { id: crypto.randomUUID(), title: "아이디어", span: 1 },
-      { id: crypto.randomUUID(), title: "요구사항 정리", span: 2 },
+      { id: createId(), title: "아이디어 풀", height: 1 },
+      { id: createId(), title: "요구사항 정리", height: 1 },
     ],
   };
 
   const columnB: Column = {
-    id: crypto.randomUUID(),
-    frac: 0.33,
+    id: createId(),
+    title: "진행 중",
     cells: [
-      { id: crypto.randomUUID(), title: "설계", span: 1 },
-      { id: crypto.randomUUID(), title: "개발 진행", span: 1 },
-      { id: crypto.randomUUID(), title: "리뷰", span: 1 },
+      { id: createId(), title: "설계", height: 1 },
+      { id: createId(), title: "개발", height: 1 },
+      { id: createId(), title: "리뷰", height: 1 },
     ],
   };
 
   const columnC: Column = {
-    id: crypto.randomUUID(),
-    frac: 0.33,
+    id: createId(),
+    title: "출시",
     cells: [
-      { id: crypto.randomUUID(), title: "출시 준비", span: 2 },
-      { id: crypto.randomUUID(), title: "완료", span: 1 },
+      { id: createId(), title: "출시 준비", height: 1 },
+      { id: createId(), title: "완료", height: 1 },
     ],
   };
 
-  const cardsByCell: BoardState["cardsByCell"] = {};
-
-  const seedCards = (cell: Cell, titles: string[]) => {
-    cardsByCell[cell.id] = titles.map((title) => ({
-      id: crypto.randomUUID(),
-      title,
-    }));
+  const tasksByCell: BoardState["tasksByCell"] = {
+    [columnA.cells[0].id]: [
+      { id: createId(), title: "시장 조사" },
+      { id: createId(), title: "사용자 인터뷰" },
+    ],
+    [columnA.cells[1].id]: [{ id: createId(), title: "MVP 정의" }],
+    [columnB.cells[0].id]: [{ id: createId(), title: "IA 설계" }],
+    [columnB.cells[1].id]: [
+      { id: createId(), title: "프론트엔드" },
+      { id: createId(), title: "백엔드" },
+    ],
+    [columnB.cells[2].id]: [{ id: createId(), title: "QA 준비" }],
+    [columnC.cells[0].id]: [
+      { id: createId(), title: "런북 작성" },
+      { id: createId(), title: "시장 공지" },
+    ],
+    [columnC.cells[1].id]: [{ id: createId(), title: "배포 완료" }],
   };
-
-  seedCards(columnA.cells[0], ["디자인 리서치", "사용자 인터뷰"]);
-  seedCards(columnA.cells[1], ["MVP 범위 확정"]);
-  seedCards(columnB.cells[0], ["IA 설계"]);
-  seedCards(columnB.cells[1], ["프론트엔드", "백엔드"]);
-  seedCards(columnB.cells[2], ["QA 체크리스트"]);
-  seedCards(columnC.cells[0], ["런북 정리", "시장 알림"]);
-  seedCards(columnC.cells[1], ["배포 완료"]);
 
   return {
     columns: [columnA, columnB, columnC],
-    cardsByCell,
-    rowFracs: rows,
+    tasksByCell,
   };
 };
 
-const resolveDestination = (
-  columns: Column[],
-  quadrant: QuadrantIdentifier,
-  sourceColumnIndex: number,
-  sourceIndex: number,
-): { columnIndex: number; insertIndex: number } | null => {
-  const targetColumn = columns[quadrant.columnIndex];
-  if (!targetColumn) {
-    return null;
-  }
-
-  let columnIndex = quadrant.columnIndex;
-  let insertIndex = quadrant.cellIndex;
-
-  switch (quadrant.direction) {
-    case "top": {
-      insertIndex = quadrant.cellIndex;
-      break;
-    }
-    case "bottom": {
-      insertIndex = quadrant.cellIndex + 1;
-      break;
-    }
-    case "left": {
-      columnIndex = quadrant.columnIndex - 1;
-      if (columnIndex < 0) {
-        columnIndex = quadrant.columnIndex;
-        insertIndex = quadrant.cellIndex;
-      } else {
-        const neighbor = columns[columnIndex];
-        const maxIndex = neighbor ? neighbor.cells.length : 0;
-        insertIndex = clamp(quadrant.cellIndex, 0, maxIndex);
-      }
-      break;
-    }
-    case "right": {
-      columnIndex = quadrant.columnIndex + 1;
-      if (columnIndex >= columns.length) {
-        columnIndex = quadrant.columnIndex;
-        insertIndex = clamp(quadrant.cellIndex + 1, 0, targetColumn.cells.length);
-      } else {
-        const neighbor = columns[columnIndex];
-        const maxIndex = neighbor ? neighbor.cells.length : 0;
-        insertIndex = clamp(quadrant.cellIndex, 0, maxIndex);
-      }
-      break;
-    }
-    default:
-      break;
-  }
-
-  if (columnIndex === sourceColumnIndex) {
-    if (insertIndex > sourceIndex) {
-      insertIndex -= 1;
-    }
-  }
-
-  return {
-    columnIndex,
-    insertIndex,
-  };
+type InlineTitleInputProps = {
+  value: string;
+  fallback: string;
+  onCommit: (value: string) => void;
+  fontSize?: string;
+  ariaLabel?: string;
 };
 
-const SelfCheckBadge = ({
-  columns,
-  rowFracs,
-  boardWidth,
-  rows,
-}: {
-  columns: Column[];
-  rowFracs: number[];
-  boardWidth: number;
-  rows: number;
-}) => {
-  const widthSum = columns.reduce((total, column) => total + column.frac * boardWidth, 0);
-  const widthOk = boardWidth === 0 || Math.abs(widthSum - boardWidth) < 0.5;
-  const rowSum = rowFracs.reduce((total, value) => total + value, 0);
-  const rowOk = Math.abs(rowSum - 1) < 0.0001;
-  const spansOk = columns.every((column) => sumSpans(column.cells) === rows);
-  const noEmpty = columns.every((column) => column.cells.length > 0);
+const InlineTitleInput = ({ value, fallback, onCommit, fontSize, ariaLabel }: InlineTitleInputProps) => {
+  const [draft, setDraft] = useState(value);
 
-  const items = [
-    { label: "Σ(colPx) === availW", ok: widthOk },
-    { label: "rowFracs 합 == 1", ok: rowOk },
-    { label: "각 컬럼 span 합 == rows", ok: spansOk },
-    { label: "빈 컬럼 없음", ok: noEmpty && columns.length > 0 },
-  ];
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const trimmed = draft.trim();
+    onCommit(trimmed.length > 0 ? trimmed : fallback);
+  }, [draft, fallback, onCommit]);
+
+  const handleChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setDraft(event.target.value);
+  }, []);
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commit();
+        event.currentTarget.blur();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDraft(value);
+        event.currentTarget.blur();
+      }
+    },
+    [commit, value],
+  );
 
   return (
-    <Flex wrap="wrap" gap={2} fontSize="xs" color="gray.200">
-      {items.map((item) => (
-        <Flex
-          key={item.label}
-          align="center"
-          borderWidth="1px"
-          borderColor={item.ok ? "green.400" : "orange.400"}
-          bg={item.ok ? "rgba(34,197,94,0.12)" : "rgba(251,191,36,0.12)"}
-          px={3}
-          py={1}
-          borderRadius="full"
-          fontWeight="medium"
-        >
-          <Text mr={2}>{item.ok ? "✅" : "⚠️"}</Text>
-          <Text>{item.label}</Text>
-        </Flex>
-      ))}
-    </Flex>
+    <chakra.input
+      value={draft}
+      onChange={handleChange}
+      onBlur={commit}
+      onKeyDown={handleKeyDown}
+      fontSize={fontSize}
+      fontWeight="semibold"
+      color={{ base: "gray.700", _dark: "gray.100" }}
+      placeholder={fallback}
+      aria-label={ariaLabel}
+      minW="0"
+      px={1}
+      py={1}
+      border="none"
+      bg="transparent"
+      borderRadius="md"
+      _focusVisible={{
+        outline: "none",
+        boxShadow: "0 0 0 1px var(--chakra-colors-blue-400)",
+        bg: { base: "gray.50", _dark: "gray.800" },
+      }}
+      transition="background-color 0.2s ease, box-shadow 0.2s ease"
+    />
   );
 };
 
-const QuadrantDroppable = ({ droppableId, style }: { droppableId: string; style: CSSProperties }) => (
-  <Droppable droppableId={droppableId} type="CELL">
-    {(provided: DroppableProvided, snapshot: DroppableStateSnapshot) => (
-      <Box
-        ref={provided.innerRef}
-        {...provided.droppableProps}
-        style={{
-          pointerEvents: "none",
-          borderWidth: "1px",
-          borderStyle: "dashed",
-          borderColor: snapshot.isDraggingOver ? "rgba(56,189,248,0.6)" : "rgba(113,113,122,0.6)",
-          background: snapshot.isDraggingOver ? "rgba(56,189,248,0.18)" : "transparent",
-          opacity: snapshot.isDraggingOver ? 0.9 : 0,
-          transition: "opacity 0.15s ease, border-color 0.15s ease",
-          borderRadius: "8px",
-          ...style,
-        }}
-      >
-        {provided.placeholder}
-      </Box>
-    )}
-  </Droppable>
-);
-
 type CellCardProps = {
   cell: Cell;
-  columnIndex: number;
-  cellIndex: number;
-  cards: Card[];
-  dragHandleProps: DraggableProvidedDragHandleProps | null;
+  tasks: Task[];
+  dragHandleProps: DraggableProvidedDragHandleProps | null | undefined;
   isDragging: boolean;
-  onAddCard: (cellId: string, title: string) => void;
-  onRemoveCard: (cellId: string, cardId: string) => void;
+  hasBottomNeighbor: boolean;
+  onAddTask: (cellId: string, title: string) => void;
+  onRemoveTask: (cellId: string, taskId: string) => void;
   onDeleteCell: () => void;
   onUpdateCellTitle: (cellId: string, title: string) => void;
+  onStartResize: (event: ReactPointerEvent<HTMLDivElement>) => void;
 };
 
 const CellCard = ({
   cell,
-  columnIndex,
-  cellIndex,
-  cards,
+  tasks,
   dragHandleProps,
   isDragging,
-  onAddCard,
-  onRemoveCard,
+  hasBottomNeighbor,
+  onAddTask,
+  onRemoveTask,
   onDeleteCell,
   onUpdateCellTitle,
+  onStartResize,
 }: CellCardProps) => {
-  const [isEditing, setIsEditing] = useState(false);
-  const [draftTitle, setDraftTitle] = useState(cell.title);
-  const [newCardTitle, setNewCardTitle] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const dragHandle = dragHandleProps ?? {};
 
-  useEffect(() => {
-    setDraftTitle(cell.title);
-  }, [cell.title]);
-
-  useEffect(() => {
-    if (isEditing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
-  }, [isEditing]);
-
-  const commitTitle = useCallback(() => {
-    const nextTitle = draftTitle.trim() || "무제 셀";
-    onUpdateCellTitle(cell.id, nextTitle);
-    setIsEditing(false);
-  }, [cell.id, draftTitle, onUpdateCellTitle]);
-
-  const handleAddCard = useCallback(
+  const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const title = newCardTitle.trim() || "새 카드";
-      onAddCard(cell.id, title);
-      setNewCardTitle("");
+      const value = newTaskTitle.trim() || "새 태스크";
+      onAddTask(cell.id, value);
+      setNewTaskTitle("");
     },
-    [cell.id, newCardTitle, onAddCard],
+    [cell.id, newTaskTitle, onAddTask],
   );
 
-  const droppableId = `cards-${cell.id}`;
-  const minimumHeight = `${Math.max(cell.span * MIN_ROW_PX, 160)}px`;
-
   return (
-    <Box
-      position="relative"
-      display="flex"
-      flexDirection="column"
-      overflow="hidden"
+    <Flex
+      direction="column"
+      height="100%"
+      minH={`${CELL_MIN_HEIGHT_PX}px`}
+      bg={{ base: "white", _dark: "gray.800" }}
       borderWidth="1px"
-      borderColor="gray.700"
-      bg="gray.800"
-      rounded="lg"
-      shadow={isDragging ? "xl" : "md"}
-      zIndex={isDragging ? 20 : 10}
-      minH={minimumHeight}
+      borderColor={{ base: "gray.200", _dark: "gray.700" }}
+      borderRadius="lg"
+      boxShadow={isDragging ? "lg" : "sm"}
+      transition="box-shadow 0.2s ease, transform 0.2s ease"
+      transform={isDragging ? "scale(1.02)" : "none"}
+      position="relative"
+      overflow="visible"
+      p={4}
+      gap={3}
+      data-cell-id={cell.id}
     >
-      <QuadrantDroppable
-        droppableId={`quad:${columnIndex}:${cellIndex}:top`}
-        style={{ position: "absolute", left: "12px", right: "12px", top: "8px", height: "26%" }}
-      />
-      <QuadrantDroppable
-        droppableId={`quad:${columnIndex}:${cellIndex}:bottom`}
-        style={{ position: "absolute", left: "12px", right: "12px", bottom: "8px", height: "26%" }}
-      />
-      <QuadrantDroppable
-        droppableId={`quad:${columnIndex}:${cellIndex}:left`}
-        style={{ position: "absolute", top: "12px", bottom: "12px", left: "8px", width: "32%" }}
-      />
-      <QuadrantDroppable
-        droppableId={`quad:${columnIndex}:${cellIndex}:right`}
-        style={{ position: "absolute", top: "12px", bottom: "12px", right: "8px", width: "32%" }}
-      />
-      <Flex align="center" justify="space-between" gap={2} borderBottomWidth="1px" borderColor="gray.700" px={3} py={2}>
-        {isEditing ? (
-          <Input
-            ref={inputRef}
-            value={draftTitle}
-            onChange={(event) => setDraftTitle(event.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-              if (event.key === "Enter") {
-                commitTitle();
-              }
-              if (event.key === "Escape") {
-                setDraftTitle(cell.title);
-                setIsEditing(false);
-              }
-            }}
+      <Flex align="center" justify="space-between" gap={3}>
+        <Flex align="center" gap={2} flex="1" minW="0">
+          <IconButton
+            aria-label="셀 이동"
+            variant="ghost"
             size="sm"
-            bg="gray.900"
-            borderColor="gray.600"
-            _focus={{ borderColor: "blue.400", boxShadow: "0 0 0 1px rgba(56,189,248,0.4)" }}
+            cursor="grab"
+            {...dragHandle}
+          >
+            <DragHandleIcon boxSize={4} />
+          </IconButton>
+          <InlineTitleInput
+            value={cell.title}
+            fallback="무제 셀"
+            onCommit={(next) => onUpdateCellTitle(cell.id, next)}
+            ariaLabel="셀 제목"
           />
-        ) : (
-          <Flex flex="1" align="center" gap={2} onDoubleClick={() => setIsEditing(true)}>
-            <Box
-              as="span"
-              cursor="grab"
-              userSelect="none"
-              px={2}
-              py={1}
-              fontSize="xs"
-              fontWeight="semibold"
-              textTransform="uppercase"
-              bg="gray.700"
-              color="gray.100"
-              borderRadius="md"
-              aria-label="셀 드래그 핸들"
-              aria-grabbed={isDragging}
-              {...(dragHandleProps ?? {})}
-            >
-              Move
-            </Box>
-            <Text fontSize="sm" fontWeight="semibold" color="gray.100">
-              {cell.title}
-            </Text>
+        </Flex>
+        <IconButton aria-label="셀 삭제" size="sm" onClick={onDeleteCell} variant="ghost">
+          <DeleteIcon boxSize={3} />
+        </IconButton>
+      </Flex>
+
+      <Droppable droppableId={tasksDroppableId(cell.id)} type="TASK">
+        {(provided) => (
+          <Flex
+            direction="column"
+            ref={provided.innerRef}
+            {...provided.droppableProps}
+            gap={2}
+            flex="1"
+            overflowY="auto"
+            minH="0"
+            pr={1}
+          >
+            {tasks.map((task, index) => (
+              <Draggable key={task.id} draggableId={task.id} index={index}>
+                {(taskProvided, taskSnapshot) => (
+                  <Box
+                    ref={taskProvided.innerRef}
+                    {...taskProvided.draggableProps}
+                    {...taskProvided.dragHandleProps}
+                    p={3}
+                    borderWidth="1px"
+                    borderColor={
+                      taskSnapshot.isDragging ? "blue.300" : { base: "gray.200", _dark: "gray.700" }
+                    }
+                    bg={
+                      taskSnapshot.isDragging
+                        ? { base: "blue.50", _dark: "blue.700" }
+                        : { base: "gray.50", _dark: "gray.900" }
+                    }
+                    borderRadius="md"
+                    boxShadow={taskSnapshot.isDragging ? "md" : "sm"}
+                  >
+                    <Flex align="center" justify="space-between" gap={3}>
+                      <Text fontWeight="medium" flex="1">
+                        {task.title}
+                      </Text>
+                      <IconButton
+                        aria-label="태스크 삭제"
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => onRemoveTask(cell.id, task.id)}
+                      >
+                        <DeleteIcon boxSize={3} />
+                      </IconButton>
+                    </Flex>
+                  </Box>
+                )}
+              </Draggable>
+            ))}
+            {tasks.length === 0 && (
+              <Text fontSize="sm" color={{ base: "gray.400", _dark: "gray.500" }} textAlign="center" py={4}>
+                태스크를 드롭하거나 추가하세요.
+              </Text>
+            )}
+            {provided.placeholder}
           </Flex>
         )}
-        <Button
-          aria-label="셀 삭제"
+      </Droppable>
+
+      <chakra.form onSubmit={handleSubmit} mt="auto" display="flex" gap={2}>
+        <Input
           size="sm"
-          variant="ghost"
-          colorScheme="red"
-          borderRadius="full"
-          onClick={onDeleteCell}
-        >
-          ✕
+          placeholder="새 태스크"
+          value={newTaskTitle}
+          onChange={(event) => setNewTaskTitle(event.target.value)}
+        />
+        <Button type="submit" size="sm" colorScheme="blue">
+          추가
         </Button>
-      </Flex>
-      <Flex direction="column" flex="1" overflow="hidden">
-        <Droppable droppableId={droppableId} type="CARD">
-          {(provided, snapshot) => (
-            <VStack
-              ref={provided.innerRef}
-              {...provided.droppableProps}
-              align="stretch"
-              gap={2}
-              flex="1"
-              overflowY="auto"
-              px={3}
-              py={3}
-              bg={snapshot.isDraggingOver ? "rgba(56,189,248,0.08)" : "transparent"}
-              borderRadius="md"
-              minH={`${Math.max(cell.span * MIN_ROW_PX - 96, 120)}px`}
-            >
-              {cards.length === 0 ? (
-                <Text fontSize="sm" color="gray.400">
-                  카드를 추가하세요.
-                </Text>
-              ) : (
-                cards.map((card, index) => (
-                  <Draggable key={card.id} draggableId={card.id} index={index}>
-                    {(cardProvided, cardSnapshot) => (
-                      <Box
-                        ref={cardProvided.innerRef}
-                        {...cardProvided.draggableProps}
-                        {...cardProvided.dragHandleProps}
-                        position="relative"
-                        borderWidth="1px"
-                        borderColor={cardSnapshot.isDragging ? "blue.300" : "gray.600"}
-                        bg={cardSnapshot.isDragging ? "gray.700" : "gray.700"}
-                        rounded="md"
-                        p={3}
-                        shadow={cardSnapshot.isDragging ? "lg" : undefined}
-                      >
-                        <Text pr={6} fontSize="sm" color="gray.100">
-                          {card.title}
-                        </Text>
-                        <Button
-                          aria-label="카드 삭제"
-                          size="xs"
-                          variant="ghost"
-                          colorScheme="red"
-                          borderRadius="full"
-                          position="absolute"
-                          top={2}
-                          right={2}
-                          minW="auto"
-                          h={6}
-                          w={6}
-                          onClick={() => onRemoveCard(cell.id, card.id)}
-                        >
-                          ✕
-                        </Button>
-                      </Box>
-                    )}
-                  </Draggable>
-                ))
-              )}
-              {provided.placeholder}
-            </VStack>
-          )}
-        </Droppable>
-        <chakra.form
-          onSubmit={handleAddCard}
-          borderTopWidth="1px"
-          borderColor="gray.700"
-          px={3}
-          py={2}
-          bg="gray.900"
-        >
-          <Text fontSize="xs" fontWeight="semibold" textTransform="uppercase" color="gray.300" mb={2}>
-            새 카드
-          </Text>
-          <Input
-            value={newCardTitle}
-            onChange={(event) => setNewCardTitle(event.target.value)}
-            placeholder="제목을 입력하세요"
-            size="sm"
-            bg="gray.900"
-            borderColor="gray.600"
-            _placeholder={{ color: "gray.500" }}
-            _focus={{ borderColor: "blue.400", boxShadow: "0 0 0 1px rgba(56,189,248,0.4)" }}
-          />
-          <Button type="submit" size="sm" mt={2} colorScheme="blue">
-            + 카드 추가
-          </Button>
-        </chakra.form>
-      </Flex>
-    </Box>
+      </chakra.form>
+
+      {hasBottomNeighbor && (
+        <Box
+          position="absolute"
+          left={4}
+          right={4}
+          bottom={-3}
+          height="6px"
+          borderRadius="full"
+          bg="transparent"
+          _hover={{ bg: "blue.300" }}
+          cursor="row-resize"
+          onPointerDown={onStartResize}
+          role="separator"
+          aria-label="셀 높이 조절"
+          zIndex={2}
+        />
+      )}
+    </Flex>
   );
 };
 
 const Board = () => {
   const [state, setState] = useState<BoardState>(() => createInitialBoard());
-  const [boardRef, boardRect] = useElementRect<HTMLDivElement>();
-  const [activeColumnHandle, setActiveColumnHandle] = useState<number | null>(null);
-  const [activeRowHandle, setActiveRowHandle] = useState<number | null>(null);
-
-  const rows = state.rowFracs.length;
-  const boardMinHeight = useMemo(() => Math.max(rows * MIN_ROW_PX, 480), [rows]);
-
-  const gridTemplateRows = useMemo(
-    () => state.rowFracs.map((frac) => `${(frac * 100).toFixed(3)}%`).join(" "),
-    [state.rowFracs],
-  );
-
-  const columnOffsets = useMemo(() => {
-    if (state.columns.length <= 1) {
-      return [] as number[];
-    }
-    const offsets: number[] = [];
-    let sum = 0;
-    state.columns.forEach((column, index) => {
-      sum += column.frac;
-      if (index < state.columns.length - 1) {
-        offsets.push(sum);
-      }
-    });
-    return offsets;
-  }, [state.columns]);
-
-  const rowOffsets = useMemo(() => {
-    if (state.rowFracs.length <= 1) {
-      return [] as number[];
-    }
-    const offsets: number[] = [];
-    let sum = 0;
-    state.rowFracs.forEach((frac, index) => {
-      sum += frac;
-      if (index < state.rowFracs.length - 1) {
-        offsets.push(sum);
-      }
-    });
-    return offsets;
-  }, [state.rowFracs]);
+  const columnRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const handleAddColumn = useCallback(() => {
     setState((prev) => {
-      const rowsCount = prev.rowFracs.length;
-      const newCell: Cell = {
-        id: crypto.randomUUID(),
-        title: "새 셀",
-        span: rowsCount,
-      };
+      const columnId = createId();
+      const cellId = createId();
       const newColumn: Column = {
-        id: crypto.randomUUID(),
-        frac: prev.columns.length === 0 ? 1 : 1 / (prev.columns.length + 1),
-        cells: [newCell],
+        id: columnId,
+        title: `새 컬럼 ${prev.columns.length + 1}`,
+        cells: [{ id: cellId, title: "새 셀", height: 1 }],
       };
+      return {
+        columns: [...prev.columns, newColumn],
+        tasksByCell: { ...prev.tasksByCell, [cellId]: [] },
+      };
+    });
+  }, []);
 
-      if (prev.columns.length === 0) {
+  const handleDeleteColumn = useCallback((columnId: string) => {
+    setState((prev) => {
+      const nextColumns = prev.columns.filter((column) => column.id !== columnId);
+      const removedColumn = prev.columns.find((column) => column.id === columnId);
+      if (!removedColumn) {
+        return prev;
+      }
+      const nextTasks = { ...prev.tasksByCell };
+      removedColumn.cells.forEach((cell) => {
+        delete nextTasks[cell.id];
+      });
+      return {
+        columns: nextColumns,
+        tasksByCell: nextTasks,
+      };
+    });
+  }, []);
+
+  const handleAddCell = useCallback((columnId: string) => {
+    setState((prev) => {
+      const nextColumns = prev.columns.map((column) => {
+        if (column.id !== columnId) {
+          return column;
+        }
+        const cellId = createId();
         return {
-          ...prev,
-          columns: [newColumn],
-          cardsByCell: {
-            ...prev.cardsByCell,
-            [newCell.id]: [],
-          },
+          ...column,
+          cells: [...column.cells, { id: cellId, title: "새 셀", height: 1 }],
         };
+      });
+
+      const addedColumn = nextColumns.find((column) => column.id === columnId);
+      if (!addedColumn) {
+        return prev;
       }
 
-      const shrinkFactor = 1 - newColumn.frac;
-      const nextColumns = [
-        ...prev.columns.map((column) => ({
+      const addedCell = addedColumn.cells[addedColumn.cells.length - 1];
+      return {
+        columns: nextColumns,
+        tasksByCell: { ...prev.tasksByCell, [addedCell.id]: [] },
+      };
+    });
+  }, []);
+
+  const handleDeleteCell = useCallback((columnId: string, cellId: string) => {
+    setState((prev) => {
+      const nextColumns = prev.columns.map((column) => {
+        if (column.id !== columnId) {
+          return column;
+        }
+        return {
           ...column,
-          cells: column.cells.map((cell) => ({ ...cell })),
-          frac: column.frac * shrinkFactor,
-        })),
-        newColumn,
-      ];
-
+          cells: column.cells.filter((cell) => cell.id !== cellId),
+        };
+      });
+      const nextTasks = { ...prev.tasksByCell };
+      delete nextTasks[cellId];
       return {
-        ...prev,
-        columns: normalizeFracs(nextColumns),
-        cardsByCell: {
-          ...prev.cardsByCell,
-          [newCell.id]: [],
-        },
+        columns: nextColumns,
+        tasksByCell: nextTasks,
       };
     });
   }, []);
 
-  const handleAddCard = useCallback((cellId: string, title: string) => {
-    setState((prev) => {
-      const cards = prev.cardsByCell[cellId] ?? [];
-      return {
-        ...prev,
-        cardsByCell: {
-          ...prev.cardsByCell,
-          [cellId]: [...cards, { id: crypto.randomUUID(), title }],
-        },
-      };
-    });
-  }, []);
-
-  const handleRemoveCard = useCallback((cellId: string, cardId: string) => {
-    setState((prev) => {
-      const cards = prev.cardsByCell[cellId] ?? [];
-      return {
-        ...prev,
-        cardsByCell: {
-          ...prev.cardsByCell,
-          [cellId]: cards.filter((card) => card.id !== cardId),
-        },
-      };
-    });
+  const handleUpdateColumnTitle = useCallback((columnId: string, title: string) => {
+    setState((prev) => ({
+      columns: prev.columns.map((column) =>
+        column.id === columnId ? { ...column, title: title.trim() || "무제 컬럼" } : column,
+      ),
+      tasksByCell: prev.tasksByCell,
+    }));
   }, []);
 
   const handleUpdateCellTitle = useCallback((cellId: string, title: string) => {
     setState((prev) => ({
-      ...prev,
       columns: prev.columns.map((column) => ({
         ...column,
         cells: column.cells.map((cell) =>
-          cell.id === cellId
-            ? {
-                ...cell,
-                title,
-              }
-            : { ...cell },
+          cell.id === cellId ? { ...cell, title: title.trim() || "무제 셀" } : cell,
         ),
       })),
+      tasksByCell: prev.tasksByCell,
     }));
   }, []);
 
-  const handleDeleteCell = useCallback((columnIndex: number, cellIndex: number) => {
+  const handleAddTask = useCallback((cellId: string, title: string) => {
     setState((prev) => {
-      const targetColumn = prev.columns[columnIndex];
-      if (!targetColumn) {
-        return prev;
-      }
-
-      const cells = targetColumn.cells.map((cell) => ({ ...cell }));
-      const [removedCell] = cells.splice(cellIndex, 1);
-      if (!removedCell) {
-        return prev;
-      }
-
-      const nextCards = { ...prev.cardsByCell };
-      delete nextCards[removedCell.id];
-
-      if (cells.length === 0) {
-        const nextColumns = prev.columns
-          .filter((_, index) => index !== columnIndex)
-          .map((column) => ({
-            ...column,
-            cells: column.cells.map((cell) => ({ ...cell })),
-          }));
-        return {
-          ...prev,
-          columns: normalizeFracs(nextColumns),
-          cardsByCell: nextCards,
-        };
-      }
-
-      const redistributed = absorbSpanAfterRemoval(cells, cellIndex, removedCell.span);
-      const nextColumns = prev.columns.map((column, index) => {
-        if (index !== columnIndex) {
-          return {
-            ...column,
-            cells: column.cells.map((cell) => ({ ...cell })),
-          };
-        }
-        return {
-          ...column,
-          cells: redistributed,
-        };
-      });
-
+      const nextTasks = { ...prev.tasksByCell };
+      const tasks = nextTasks[cellId] ? [...nextTasks[cellId]] : [];
+      tasks.push({ id: createId(), title });
+      nextTasks[cellId] = tasks;
       return {
-        ...prev,
-        columns: nextColumns,
-        cardsByCell: nextCards,
+        columns: prev.columns,
+        tasksByCell: nextTasks,
       };
     });
   }, []);
 
-  const handleDragEnd = useCallback(
-    (result: DropResult) => {
-      const { destination, source, type } = result;
-      if (!destination) {
-        return;
+  const handleRemoveTask = useCallback((cellId: string, taskId: string) => {
+    setState((prev) => {
+      const nextTasks = { ...prev.tasksByCell };
+      const tasks = nextTasks[cellId];
+      if (!tasks) {
+        return prev;
       }
+      nextTasks[cellId] = tasks.filter((task) => task.id !== taskId);
+      return {
+        columns: prev.columns,
+        tasksByCell: nextTasks,
+      };
+    });
+  }, []);
 
-      if (type === "CARD") {
-        const sourceCellId = parseCardDroppableId(source.droppableId);
-        const destinationCellId = parseCardDroppableId(destination.droppableId);
-        if (!sourceCellId || !destinationCellId) {
-          return;
-        }
+  const handleDragEnd = useCallback((result: DropResult) => {
+    const { source, destination, type } = result;
+    if (!destination) {
+      return;
+    }
 
-        if (sourceCellId === destinationCellId && source.index === destination.index) {
-          return;
-        }
-
-        setState((prev) => {
-          const sourceCards = [...(prev.cardsByCell[sourceCellId] ?? [])];
-          const movedCard = sourceCards[source.index];
-          if (!movedCard) {
-            return prev;
-          }
-          sourceCards.splice(source.index, 1);
-          const nextCardsByCell = { ...prev.cardsByCell };
-
-          if (sourceCellId === destinationCellId) {
-            const insertIndex = clamp(destination.index, 0, sourceCards.length);
-            sourceCards.splice(insertIndex, 0, movedCard);
-            nextCardsByCell[sourceCellId] = sourceCards;
-          } else {
-            nextCardsByCell[sourceCellId] = sourceCards;
-            const targetCards = [...(nextCardsByCell[destinationCellId] ?? [])];
-            const insertIndex = clamp(destination.index, 0, targetCards.length);
-            targetCards.splice(insertIndex, 0, movedCard);
-            nextCardsByCell[destinationCellId] = targetCards;
-          }
-
-          return {
-            ...prev,
-            cardsByCell: nextCardsByCell,
-          };
-        });
-        return;
-      }
-
-      if (type !== "CELL") {
-        return;
-      }
-
-      const sourceColumnIndex = parseColumnDroppableId(source.droppableId);
-      if (sourceColumnIndex === null) {
-        return;
-      }
-
+    if (type === "CELL") {
       setState((prev) => {
-        let destinationInfo: { columnIndex: number; insertIndex: number } | null = null;
-        const quadrant = parseQuadrantId(destination.droppableId);
-        if (quadrant) {
-          destinationInfo = resolveDestination(prev.columns, quadrant, sourceColumnIndex, source.index);
-        } else {
-          const columnIndex = parseColumnDroppableId(destination.droppableId);
-          if (columnIndex !== null) {
-            destinationInfo = {
-              columnIndex,
-              insertIndex: destination.index,
-            };
-          }
-        }
-
-        if (!destinationInfo) {
+        const sourceColumnId = parseCellsDroppableId(source.droppableId);
+        const destinationColumnId = parseCellsDroppableId(destination.droppableId);
+        if (!sourceColumnId || !destinationColumnId) {
           return prev;
         }
 
-        if (destinationInfo.columnIndex === sourceColumnIndex) {
-          const targetColumn = prev.columns[sourceColumnIndex];
-          if (!targetColumn) {
-            return prev;
-          }
-          const cells = targetColumn.cells.map((cell) => ({ ...cell }));
-          const [movedCell] = cells.splice(source.index, 1);
-          if (!movedCell) {
-            return prev;
-          }
-          const insertIndex = clamp(destinationInfo.insertIndex, 0, cells.length);
-          cells.splice(insertIndex, 0, movedCell);
-          const nextColumns = prev.columns.map((column, index) =>
-            index === sourceColumnIndex
-              ? {
-                  ...column,
-                  cells,
-                }
-              : {
-                  ...column,
-                  cells: column.cells.map((cell) => ({ ...cell })),
-                },
-          );
+        const sourceColumnIndex = prev.columns.findIndex((column) => column.id === sourceColumnId);
+        const destinationColumnIndex = prev.columns.findIndex(
+          (column) => column.id === destinationColumnId,
+        );
+        if (sourceColumnIndex === -1 || destinationColumnIndex === -1) {
+          return prev;
+        }
 
+        if (sourceColumnIndex === destinationColumnIndex) {
+          const column = prev.columns[sourceColumnIndex];
+          const nextCells = arrayMove(column.cells, source.index, destination.index);
+          if (nextCells === column.cells) {
+            return prev;
+          }
+          const nextColumns = [...prev.columns];
+          nextColumns[sourceColumnIndex] = { ...column, cells: nextCells };
           return {
-            ...prev,
             columns: nextColumns,
+            tasksByCell: prev.tasksByCell,
           };
         }
 
-        const workingColumns = prev.columns.map((column) => ({
-          ...column,
-          cells: column.cells.map((cell) => ({ ...cell })),
-        }));
-
-        const sourceColumn = workingColumns[sourceColumnIndex];
-        if (!sourceColumn) {
-          return prev;
-        }
-
-        const [movedCell] = sourceColumn.cells.splice(source.index, 1);
+        const nextColumns = prev.columns.map((column) => ({ ...column, cells: [...column.cells] }));
+        const [movedCell] = nextColumns[sourceColumnIndex].cells.splice(source.index, 1);
         if (!movedCell) {
           return prev;
         }
+        const targetCells = nextColumns[destinationColumnIndex].cells;
+        const insertIndex = clamp(destination.index, 0, targetCells.length);
+        targetCells.splice(insertIndex, 0, movedCell);
+        return {
+          columns: nextColumns,
+          tasksByCell: prev.tasksByCell,
+        };
+      });
+      return;
+    }
 
-        let removedColumn = false;
-        if (sourceColumn.cells.length === 0) {
-          workingColumns.splice(sourceColumnIndex, 1);
-          removedColumn = true;
-        } else {
-          workingColumns[sourceColumnIndex] = {
-            ...sourceColumn,
-            cells: absorbSpanAfterRemoval(sourceColumn.cells, source.index, movedCell.span),
-          };
-        }
-
-        let destinationColumnIndex = destinationInfo.columnIndex;
-        if (removedColumn && destinationColumnIndex > sourceColumnIndex) {
-          destinationColumnIndex -= 1;
-        }
-        destinationColumnIndex = clamp(destinationColumnIndex, 0, Math.max(workingColumns.length - 1, 0));
-
-        const targetColumn = workingColumns[destinationColumnIndex];
-        if (!targetColumn) {
+    if (type === "TASK") {
+      setState((prev) => {
+        const sourceCellId = parseTasksDroppableId(source.droppableId);
+        const destinationCellId = parseTasksDroppableId(destination.droppableId);
+        if (!sourceCellId || !destinationCellId) {
           return prev;
         }
 
-        const nextCells = insertCellWithClamp(targetColumn.cells, destinationInfo.insertIndex, movedCell, rows);
+        const sourceTasks = prev.tasksByCell[sourceCellId] ? [...prev.tasksByCell[sourceCellId]] : [];
+        const [movedTask] = sourceTasks.splice(source.index, 1);
+        if (!movedTask) {
+          return prev;
+        }
 
-        workingColumns[destinationColumnIndex] = {
-          ...targetColumn,
-          cells: nextCells,
-        };
-
-        const normalizedColumns = removedColumn ? normalizeFracs(workingColumns) : workingColumns;
+        const nextTasksByCell = { ...prev.tasksByCell };
+        if (sourceCellId === destinationCellId) {
+          const insertIndex = clamp(destination.index, 0, sourceTasks.length);
+          sourceTasks.splice(insertIndex, 0, movedTask);
+          nextTasksByCell[sourceCellId] = sourceTasks;
+        } else {
+          nextTasksByCell[sourceCellId] = sourceTasks;
+          const targetTasks = nextTasksByCell[destinationCellId]
+            ? [...nextTasksByCell[destinationCellId]]
+            : [];
+          const insertIndex = clamp(destination.index, 0, targetTasks.length);
+          targetTasks.splice(insertIndex, 0, movedTask);
+          nextTasksByCell[destinationCellId] = targetTasks;
+        }
 
         return {
-          ...prev,
-          columns: normalizedColumns,
+          columns: prev.columns,
+          tasksByCell: nextTasksByCell,
         };
       });
-    },
-    [rows],
-  );
+    }
+  }, []);
 
-  const startColumnResize = useCallback(
-    (index: number) => (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!boardRect.width || state.columns.length <= index + 1) {
+  const handleResizeStart = useCallback(
+    (columnIndex: number, cellIndex: number, event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const columnElement = columnRefs.current[columnIndex];
+      const column = state.columns[columnIndex];
+      if (!columnElement || !column) {
         return;
       }
-      event.preventDefault();
-      const width = boardRect.width;
-      const minFrac = Math.min(0.5, MIN_COL_PX / width);
-      const startX = event.clientX;
-      const initialFracs = state.columns.map((column) => column.frac);
-      setActiveColumnHandle(index);
 
-      const handlePointerMove = (moveEvent: PointerEvent) => {
-        const deltaPx = moveEvent.clientX - startX;
-        const deltaFrac = deltaPx / width;
-        setState((prev) => {
-          const leftIndex = index;
-          const rightIndex = index + 1;
-          const total = initialFracs[leftIndex] + initialFracs[rightIndex];
-          const effectiveMin = Math.min(minFrac, total / 2);
-          const nextLeft = clamp(initialFracs[leftIndex] + deltaFrac, effectiveMin, total - effectiveMin);
-          const nextRight = total - nextLeft;
-          return {
-            ...prev,
-            columns: prev.columns.map((column, columnIndex) => {
-              if (columnIndex === leftIndex) {
-                return {
-                  ...column,
-                  frac: nextLeft,
-                };
-              }
-              if (columnIndex === rightIndex) {
-                return {
-                  ...column,
-                  frac: nextRight,
-                };
-              }
-              return column;
-            }),
-          };
-        });
-      };
-
-      const handlePointerUp = () => {
-        setActiveColumnHandle(null);
-        window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", handlePointerUp);
-      };
-
-      window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", handlePointerUp);
-    },
-    [boardRect.width, state.columns],
-  );
-
-  const startRowResize = useCallback(
-    (index: number) => (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!boardRect.height || state.rowFracs.length <= index + 1) {
+      const topCell = column.cells[cellIndex];
+      const bottomCell = column.cells[cellIndex + 1];
+      if (!topCell || !bottomCell) {
         return;
       }
-      event.preventDefault();
-      const height = boardRect.height;
-      const minFrac = Math.min(0.5, MIN_ROW_PX / height);
+
+      const topElement = columnElement.querySelector<HTMLElement>(`[data-cell-id="${topCell.id}"]`);
+      const bottomElement = columnElement.querySelector<HTMLElement>(
+        `[data-cell-id="${bottomCell.id}"]`,
+      );
+      if (!topElement || !bottomElement) {
+        return;
+      }
+
+      const topRect = topElement.getBoundingClientRect();
+      const bottomRect = bottomElement.getBoundingClientRect();
+      const totalHeightPx = topRect.height + bottomRect.height;
+      if (totalHeightPx <= 0) {
+        return;
+      }
+
+      const totalHeightWeight = topCell.height + bottomCell.height;
       const startY = event.clientY;
-      const initialFracs = state.rowFracs;
-      setActiveRowHandle(index);
+      const minHeightPx = Math.min(CELL_MIN_HEIGHT_PX, totalHeightPx / 2);
+      const minRatio = minHeightPx / totalHeightPx;
 
       const handlePointerMove = (moveEvent: PointerEvent) => {
-        const deltaPx = moveEvent.clientY - startY;
-        const deltaFrac = deltaPx / height;
+        const deltaY = moveEvent.clientY - startY;
+        const nextTopPx = clamp(topRect.height + deltaY, minHeightPx, totalHeightPx - minHeightPx);
+        const ratio = clamp(nextTopPx / totalHeightPx, minRatio, 1 - minRatio);
+        const nextTopHeight = totalHeightWeight * ratio;
+        const nextBottomHeight = totalHeightWeight - nextTopHeight;
+
         setState((prev) => {
-          const upper = initialFracs[index];
-          const lower = initialFracs[index + 1];
-          const total = upper + lower;
-          const effectiveMin = Math.min(minFrac, total / 2);
-          const nextUpper = clamp(upper + deltaFrac, effectiveMin, total - effectiveMin);
-          const nextLower = total - nextUpper;
-          const nextFracs = [...prev.rowFracs];
-          nextFracs[index] = nextUpper;
-          nextFracs[index + 1] = nextLower;
+          const nextColumns = prev.columns.map((prevColumn, index) => {
+            if (index !== columnIndex) {
+              return prevColumn;
+            }
+            return {
+              ...prevColumn,
+              cells: prevColumn.cells.map((cell, idx) => {
+                if (idx === cellIndex) {
+                  return { ...cell, height: nextTopHeight };
+                }
+                if (idx === cellIndex + 1) {
+                  return { ...cell, height: nextBottomHeight };
+                }
+                return cell;
+              }),
+            };
+          });
           return {
-            ...prev,
-            rowFracs: nextFracs,
+            columns: nextColumns,
+            tasksByCell: prev.tasksByCell,
           };
         });
       };
 
       const handlePointerUp = () => {
-        setActiveRowHandle(null);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
         window.removeEventListener("pointermove", handlePointerMove);
         window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerUp);
       };
 
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerUp);
     },
-    [boardRect.height, state.rowFracs],
+    [state.columns],
   );
 
   return (
-    <Flex direction="column" minH="100vh" bg="gray.900" color="gray.100">
-      <Flex direction="column" flex="1" maxW="6xl" w="full" mx="auto" px={6} py={6} gap={6}>
-        <Flex align="center" justify="space-between" flexWrap="wrap" gap={3}>
-          <Box>
-            <Heading size="lg" color="gray.50">
-              Advanced Kanban
-            </Heading>
-            <Text fontSize="sm" color="gray.400">
-              셀 헤더를 드래그하여 배치하고, 가장자리로 드랍해 위치를 조정하세요.
-            </Text>
-          </Box>
-          <Button type="button" onClick={handleAddColumn} colorScheme="blue">
-            + 새 컬럼
-          </Button>
-        </Flex>
-        <SelfCheckBadge columns={state.columns} rowFracs={state.rowFracs} boardWidth={boardRect.width} rows={rows} />
-        <Box
-          position="relative"
-          flex="1"
-          minH={`${boardMinHeight}px`}
-          maxH="90vh"
-          w="full"
-          overflow="hidden"
-          borderWidth="1px"
-          borderColor="gray.800"
-          bg="gray.900"
-          rounded="xl"
-          display="flex"
+    <Box
+      w="100%"
+      minH={`${BOARD_MIN_HEIGHT}px`}
+      px={6}
+      py={4}
+      display="flex"
+      flexDirection="column"
+    >
+      <Flex justify="space-between" align="center" mb={4}>
+        <Heading size="lg">작업 보드</Heading>
+        <Button
+          colorScheme="blue"
+          onClick={handleAddColumn}
+          display="inline-flex"
+          alignItems="center"
+          gap={2}
         >
-          <Box ref={boardRef} position="relative" flex="1" overflow="auto">
-            <DragDropContext onDragEnd={handleDragEnd}>
-              <Flex h="full" w="full">
-                {state.columns.map((column, columnIndex) => (
-                  <Flex
-                    key={column.id}
-                    position="relative"
-                    direction="column"
-                    px={3}
-                    h="full"
-                    style={{
-                      width: `${(column.frac * 100).toFixed(4)}%`,
-                      flexBasis: `${(column.frac * 100).toFixed(4)}%`,
-                      flexGrow: 0,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Droppable droppableId={`col-${columnIndex}`} type="CELL">
-                      {(provided) => (
-                        <Box
-                          ref={provided.innerRef}
-                          {...provided.droppableProps}
-                          display="grid"
-                          h="full"
-                          w="full"
-                          gridTemplateRows={gridTemplateRows}
-                        >
-                          {column.cells.map((cell, cellIndex) => (
-                            <Draggable key={cell.id} draggableId={cell.id} index={cellIndex}>
-                              {(draggableProvided, snapshot) => (
-                                <Box
-                                  ref={draggableProvided.innerRef}
-                                  {...draggableProvided.draggableProps}
-                                  style={{
-                                    ...draggableProvided.draggableProps.style,
-                                    gridRow: `span ${cell.span}`,
-                                  }}
-                                  p={2}
-                                >
-                                  <CellCard
-                                    cell={cell}
-                                    columnIndex={columnIndex}
-                                    cellIndex={cellIndex}
-                                    cards={state.cardsByCell[cell.id] ?? []}
-                                    dragHandleProps={draggableProvided.dragHandleProps}
-                                    isDragging={snapshot.isDragging}
-                                    onAddCard={handleAddCard}
-                                    onRemoveCard={handleRemoveCard}
-                                    onDeleteCell={() => handleDeleteCell(columnIndex, cellIndex)}
-                                    onUpdateCellTitle={handleUpdateCellTitle}
-                                  />
-                                </Box>
-                              )}
-                            </Draggable>
-                          ))}
-                          {provided.placeholder}
-                        </Box>
-                      )}
-                    </Droppable>
-                  </Flex>
-                ))}
-              </Flex>
-            </DragDropContext>
-            {columnOffsets.map((offset, index) => (
-              <Box
-                key={`col-divider-${offset}`}
-                position="absolute"
-                insetY={0}
-                zIndex={30}
-                display="flex"
-                pointerEvents="none"
-                left={`${(offset * 100).toFixed(4)}%`}
-                transform="translateX(-50%)"
-              >
-                <Box position="relative" h="full" w={6} display="flex" justifyContent="center">
-                  <Box
-                    role="separator"
-                    aria-orientation="vertical"
-                    pointerEvents="auto"
-                    h="full"
-                    w={1}
-                    cursor="ew-resize"
-                    borderRadius="full"
-                    bg={activeColumnHandle === index ? "blue.400" : "gray.600"}
-                    _hover={{ bg: "blue.400" }}
-                    onPointerDown={startColumnResize(index)}
-                  />
-                </Box>
-              </Box>
-            ))}
-            {rowOffsets.map((offset, index) => (
-              <Box
-                key={`row-divider-${offset}`}
-                position="absolute"
-                insetX={0}
-                zIndex={30}
-                display="flex"
-                pointerEvents="none"
-                top={`${(offset * 100).toFixed(4)}%`}
-                transform="translateY(-50%)"
-              >
-                <Box position="relative" w="full" h={6}>
-                  <Box
-                    role="separator"
-                    aria-orientation="horizontal"
-                    pointerEvents="auto"
-                    h={1}
-                    w="full"
-                    cursor="ns-resize"
-                    borderRadius="full"
-                    bg={activeRowHandle === index ? "blue.400" : "gray.600"}
-                    _hover={{ bg: "blue.400" }}
-                    onPointerDown={startRowResize(index)}
-                  />
-                </Box>
-              </Box>
-            ))}
-          </Box>
-        </Box>
+          <AddIcon />
+          컬럼 추가
+        </Button>
       </Flex>
-    </Flex>
+
+      <DragDropContext onDragEnd={handleDragEnd}>
+        <Flex
+          gap={4}
+          align="stretch"
+          overflowX="auto"
+          overflowY="auto"
+          pb={4}
+          flex="1"
+        >
+          {state.columns.map((column, columnIndex) => (
+            <Box
+              key={column.id}
+              bg={{ base: "gray.100", _dark: "gray.900" }}
+              borderRadius="xl"
+              borderWidth="1px"
+              borderColor={{ base: "gray.200", _dark: "gray.700" }}
+              minW="320px"
+              maxW="340px"
+              flexShrink={0}
+              p={4}
+              display="flex"
+              flexDirection="column"
+              gap={4}
+              minH={`${COLUMN_MIN_HEIGHT}px`}
+              height="100%"
+            >
+              <Flex align="center" justify="space-between" gap={3}>
+                <Box flex="1" minW="0">
+                  <InlineTitleInput
+                    value={column.title}
+                    fallback="무제 컬럼"
+                    onCommit={(next) => handleUpdateColumnTitle(column.id, next)}
+                    fontSize="lg"
+                    ariaLabel="컬럼 제목"
+                  />
+                </Box>
+                <IconButton
+                  aria-label="컬럼 삭제"
+                  onClick={() => handleDeleteColumn(column.id)}
+                  variant="ghost"
+                  size="sm"
+                >
+                  <DeleteIcon />
+                </IconButton>
+              </Flex>
+
+              <Droppable droppableId={cellsDroppableId(column.id)} type="CELL">
+                {(provided) => (
+                  <Flex
+                    ref={(node) => {
+                      provided.innerRef(node);
+                      columnRefs.current[columnIndex] = node;
+                    }}
+                    {...provided.droppableProps}
+                    direction="column"
+                    gap={3}
+                    flex="1"
+                    minH="200px"
+                    position="relative"
+                  >
+                    {column.cells.map((cell, cellIndex) => (
+                      <Fragment key={cell.id}>
+                        <Draggable draggableId={cell.id} index={cellIndex}>
+                          {(draggableProvided, draggableSnapshot) => (
+                            <Box
+                              ref={draggableProvided.innerRef}
+                              {...draggableProvided.draggableProps}
+                              flex={`${cell.height} 1 0`}
+                              display="flex"
+                              flexDirection="column"
+                              minH={`${CELL_MIN_HEIGHT_PX}px`}
+                            >
+                              <CellCard
+                                cell={cell}
+                                tasks={state.tasksByCell[cell.id] ?? []}
+                                dragHandleProps={draggableProvided.dragHandleProps}
+                                isDragging={draggableSnapshot.isDragging}
+                                hasBottomNeighbor={cellIndex < column.cells.length - 1}
+                                onAddTask={handleAddTask}
+                                onRemoveTask={handleRemoveTask}
+                                onDeleteCell={() => handleDeleteCell(column.id, cell.id)}
+                                onUpdateCellTitle={handleUpdateCellTitle}
+                                onStartResize={(event) => handleResizeStart(columnIndex, cellIndex, event)}
+                              />
+                            </Box>
+                          )}
+                        </Draggable>
+                      </Fragment>
+                    ))}
+                    {provided.placeholder}
+                    {column.cells.length === 0 && (
+                      <Box
+                        flex="1"
+                        display="flex"
+                        alignItems="center"
+                        justifyContent="center"
+                        borderWidth="1px"
+                        borderRadius="lg"
+                        borderStyle="dashed"
+                        borderColor={{ base: "gray.300", _dark: "gray.600" }}
+                        py={6}
+                        textAlign="center"
+                        color={{ base: "gray.500", _dark: "gray.400" }}
+                      >
+                        셀을 추가하거나 드롭하세요.
+                      </Box>
+                    )}
+                  </Flex>
+                )}
+              </Droppable>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleAddCell(column.id)}
+                display="inline-flex"
+                alignItems="center"
+                gap={2}
+              >
+                <AddIcon boxSize={3} />
+                셀 추가
+              </Button>
+            </Box>
+          ))}
+        </Flex>
+      </DragDropContext>
+    </Box>
   );
 };
 
